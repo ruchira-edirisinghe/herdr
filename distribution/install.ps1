@@ -369,6 +369,50 @@ function Test-RegularDirectory {
     return -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
 }
 
+function Get-HerdrPackageMachine {
+    param(
+        [string]$Path,
+        [string]$Format
+    )
+
+    $archive = $null
+    $stream = $null
+    try {
+        if ($Format -eq "zip") {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $archive = [System.IO.Compression.ZipFile]::OpenRead($Path)
+            $entry = $archive.GetEntry("herdr.exe")
+            if ($null -eq $entry) {
+                throw "Local Herdr package does not contain herdr.exe."
+            }
+            $stream = $entry.Open()
+        } else {
+            $stream = [System.IO.File]::OpenRead($Path)
+        }
+        $header = New-Object byte[] 4096
+        $read = 0
+        while ($read -lt $header.Length) {
+            $count = $stream.Read($header, $read, $header.Length - $read)
+            if ($count -le 0) {
+                break
+            }
+            $read += $count
+        }
+        if ($read -lt 0x40 -or $header[0] -ne 0x4D -or $header[1] -ne 0x5A) {
+            throw "Local Herdr package executable is not a PE image."
+        }
+        $peOffset = [BitConverter]::ToInt32($header, 0x3C)
+        if ($peOffset -lt 0 -or $peOffset + 6 -gt $read -or
+            [BitConverter]::ToUInt32($header, $peOffset) -ne 0x4550) {
+            throw "Local Herdr package executable has an invalid PE header."
+        }
+        return [int][BitConverter]::ToUInt16($header, $peOffset + 4)
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($null -ne $archive) { $archive.Dispose() }
+    }
+}
+
 function Test-HerdrReleaseComplete {
     param(
         [string]$ReleaseDir,
@@ -419,7 +463,7 @@ function Test-HerdrReleaseComplete {
         if ($null -eq $schemaProperty -or [int]$schemaProperty.Value -ne 1 -or
             $null -eq $packageProperty -or [string]$packageProperty.Value -ne "Microsoft.Windows.Console.ConPTY" -or
             $null -eq $versionProperty -or [string]::IsNullOrWhiteSpace([string]$versionProperty.Value) -or
-            $null -eq $architectureProperty -or [string]$architectureProperty.Value -ne "x86_64" -or
+            $null -eq $architectureProperty -or [string]$architectureProperty.Value -ne $bundleArchitecture -or
             $null -eq $filesProperty) {
             return $false
         }
@@ -702,15 +746,25 @@ switch ($architecture) {
         $targetTriple = "x86_64-pc-windows-msvc"
     }
     "Arm64" {
-        $target = "windows-x86_64"
-        $targetTriple = "x86_64-pc-windows-msvc"
-        Write-Step "Windows ARM64 detected; installing the x86_64 build under Windows emulation."
+        # Published releases are x86_64 only; a local package may be a native ARM64 build.
+        if ($useLocalPackage -and
+            (Get-HerdrPackageMachine -Path $LocalPackagePath -Format $LocalPackageFormat) -eq 0xAA64) {
+            $target = "windows-aarch64"
+            $targetTriple = "aarch64-pc-windows-msvc"
+            Write-Step "Windows ARM64 detected; installing the native ARM64 build."
+        } else {
+            $target = "windows-x86_64"
+            $targetTriple = "x86_64-pc-windows-msvc"
+            Write-Step "Windows ARM64 detected; installing the x86_64 build under Windows emulation."
+        }
     }
     default {
         Write-Error "Unsupported Windows architecture: $architecture"
         exit 1
     }
 }
+# The ConPTY bundle marker records the architecture of the conpty.dll it pins.
+$bundleArchitecture = if ($targetTriple -eq "aarch64-pc-windows-msvc") { "aarch64" } else { "x86_64" }
 
 $herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) {
     Join-Path $env:USERPROFILE ".herdr"
