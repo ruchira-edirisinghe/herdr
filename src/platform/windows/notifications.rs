@@ -24,6 +24,12 @@ const WINDOW_CLASS: &str = "HerdrNotificationActivation";
 const ACTIVATION_MESSAGE: &str = "Herdr.Notification.Activate";
 const SHOW_MESSAGE: u32 = WM_APP + 1;
 const ACTIVATOR: &str = "{D58C72D3-4548-4A40-B55B-092EF0B365C3}";
+// Use the bundled console host native to Herdr's architecture; an x64 host on
+// ARM64 would run under emulation on every notification click.
+#[cfg(not(target_arch = "aarch64"))]
+const NOTIFICATION_HOST: &str = "conpty/x64/OpenConsole.exe";
+#[cfg(target_arch = "aarch64")]
+const NOTIFICATION_HOST: &str = "conpty/arm64/OpenConsole.exe";
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
 
@@ -158,7 +164,7 @@ fn register(executable: &std::path::Path, scheme: &str) -> io::Result<()> {
     let parent = executable
         .parent()
         .ok_or_else(|| io::Error::other("missing executable directory"))?;
-    let host = parent.join("conpty/x64/OpenConsole.exe");
+    let host = parent.join(NOTIFICATION_HOST);
     if !host.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
