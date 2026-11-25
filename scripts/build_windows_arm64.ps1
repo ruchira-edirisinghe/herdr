@@ -22,6 +22,9 @@ function Invoke-NativeChecked {
         [string[]]$Arguments
     )
 
+    # Windows PowerShell turns redirected native stderr (cargo progress) into
+    # terminating errors under "Stop"; judge native tools by exit code only.
+    $ErrorActionPreference = "Continue"
     & $Command @Arguments
     if ($LASTEXITCODE -ne 0) {
         throw "$Command failed with exit code $LASTEXITCODE"
