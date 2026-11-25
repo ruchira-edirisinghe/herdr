@@ -35,9 +35,32 @@ class WindowsConptyPackageTests(unittest.TestCase):
         with (
             mock.patch.object(package.subprocess, "Popen", return_value=cargo),
             mock.patch.object(package, "install_local_bundle") as install,
+            mock.patch.object(
+                package, "executable_architecture", return_value="aarch64"
+            ) as architecture,
         ):
             package.build_local_bundle(package.DEFAULT_METADATA)
+        architecture.assert_called_once_with(executable)
+        self.assertEqual(install.call_args.args[1], "aarch64")
         self.assertEqual(install.call_args.args[-1], executable)
+
+    def test_executable_architecture_reads_the_pe_machine(self) -> None:
+        def pe_image(machine: int) -> bytes:
+            data = bytearray(0x46)
+            data[:2] = b"MZ"
+            struct.pack_into("<I", data, 0x3C, 0x40)
+            data[0x40:0x44] = b"PE\0\0"
+            struct.pack_into("<H", data, 0x44, machine)
+            return bytes(data)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "herdr.exe"
+            for machine, expected in ((0x8664, "x86_64"), (0xAA64, "aarch64")):
+                executable.write_bytes(pe_image(machine))
+                self.assertEqual(package.executable_architecture(executable), expected)
+            executable.write_bytes(pe_image(0x014C))
+            with self.assertRaisesRegex(ValueError, "unsupported PE machine 0x014c"):
+                package.executable_architecture(executable)
 
     def test_pinned_metadata_and_notices_are_consistent(self) -> None:
         metadata = package.load_metadata(package.DEFAULT_METADATA)
@@ -57,9 +80,17 @@ class WindowsConptyPackageTests(unittest.TestCase):
         installer = (package.PROJECT_ROOT / "distribution/install.ps1").read_text(
             encoding="utf-8"
         )
-        for item in metadata["bundles"]["x86_64"]["files"]:
-            self.assertIn(item["sha256"], loader)
-            self.assertNotIn(item["sha256"], installer)
+        self.assertEqual(set(metadata["bundles"]), set(package.ARCHITECTURES))
+        for architecture, bundle in metadata["bundles"].items():
+            # Every bundle shares one layout so the loader's file list fits both.
+            self.assertEqual(
+                {item["destination"] for item in bundle["files"]},
+                {item["destination"] for item in metadata["bundles"]["x86_64"]["files"]},
+                architecture,
+            )
+            for item in bundle["files"]:
+                self.assertIn(item["sha256"], loader)
+                self.assertNotIn(item["sha256"], installer)
         self.assertIn('Get-Content -LiteralPath $markerPath -Raw', installer)
         self.assertIn('$filesProperty.Value.PSObject.Properties[$relative]', installer)
         for notice in metadata["notices"]:

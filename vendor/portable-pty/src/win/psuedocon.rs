@@ -155,11 +155,18 @@ fn load_conpty() -> ConPtyFuncs {
 }
 
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+// conpty.dll must match the Herdr executable's architecture; both OpenConsole
+// hosts ship in every bundle and conpty.dll picks the one for the native machine.
+#[cfg(target_arch = "x86_64")]
+const CONPTY_DLL_SHA256: &str = "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8";
+#[cfg(target_arch = "aarch64")]
+const CONPTY_DLL_SHA256: &str = "db3d173640b172bafd42d5b541b638a9aeec1c7d0e40dd636bf02822a32c912c";
+// Other architectures have no bundle; app_local_conpty_path() returns before hashing.
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const CONPTY_DLL_SHA256: &str = "";
+
 const CONPTY_FILES: &[(&str, &str)] = &[
-    (
-        "conpty.dll",
-        "39fba2713e2495117b1591ae8c32a3b904bea7aa66069cf7815e2844c76d75d8",
-    ),
+    ("conpty.dll", CONPTY_DLL_SHA256),
     (
         "x64/OpenConsole.exe",
         "b7fd936c2668b87b9ecf7b3366dc6568afc1c6f981874cba3e955a1c35cf8160",
@@ -171,7 +178,7 @@ const CONPTY_FILES: &[(&str, &str)] = &[
 ];
 
 fn app_local_conpty_path() -> Result<Option<PathBuf>, String> {
-    if std::env::consts::ARCH != "x86_64" {
+    if !matches!(std::env::consts::ARCH, "x86_64" | "aarch64") {
         return Ok(None);
     }
     let executable = std::env::current_exe()
